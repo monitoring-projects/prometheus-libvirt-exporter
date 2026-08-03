@@ -10,7 +10,7 @@ before:
 builds:
   - id: prometheus-libvirt-exporter
     dir: .
-    main: ./main.go
+    main: .
     binary: prometheus-libvirt-exporter
     env:
       - CGO_ENABLED=0 # build a static binary without C dependencies

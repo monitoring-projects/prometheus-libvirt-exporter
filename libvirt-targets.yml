@@ -1,0 +1,86 @@
+# Libvirt Targets Configuration for Cluster Monitoring
+#
+# This file defines the libvirt hypervisor nodes that should be monitored
+# in cluster mode via the /cluster endpoint.
+#
+# QEMU Connection URI Formats:
+# - Local system daemon:     qemu:///system
+# - Local user session:      qemu:///session  
+# - Remote via SSH:          qemu+ssh://user@hostname/system
+# - Remote via TCP:          qemu+tcp://hostname/system (insecure, dev only)
+# - Remote via TLS:          qemu+tls://hostname/system
+#
+# Socket-based connections (e.g., /var/run/libvirt/libvirt-sock-ro) will NOT
+# work for remote nodes. Use qemu+ssh:// URIs for cluster deployments.
+
+# Local hypervisor node
+- targets:
+  - qemu:///system
+  labels:
+    datacenter: dc1
+    rack: rack1
+    environment: production
+    module: local
+    role: hypervisor
+
+# Remote hypervisor nodes via SSH
+- targets:
+  - qemu+ssh://root@node1.example.com/system
+  - qemu+ssh://root@node2.example.com/system
+  - qemu+ssh://root@node3.example.com/system
+  labels:
+    datacenter: dc1
+    rack: rack2
+    environment: production
+    module: remote
+    role: hypervisor
+
+# Remote hypervisor nodes in different datacenter
+- targets:
+  - qemu+ssh://libvirt@node4.example.com/system
+  - qemu+ssh://libvirt@node5.example.com/system
+  labels:
+    datacenter: dc2
+    rack: rack1
+    environment: production
+    module: remote
+    role: hypervisor
+
+# Development/test nodes
+- targets:
+  - qemu+ssh://user@devnode1.example.com/system
+  labels:
+    datacenter: dc1
+    rack: rack3
+    environment: development
+    module: remote
+    role: test
+
+# Notes:
+# 1. SSH Authentication:
+#    - Ensure SSH key-based authentication is configured
+#    - The user running the exporter must have SSH access to remote hosts
+#    - Example: ssh-copy-id root@node1.example.com
+#
+# 2. Libvirt Permissions:
+#    - Remote user must have libvirt access permissions
+#    - Add user to 'libvirt' group on remote nodes: usermod -aG libvirt username
+#    - Or use root for full access (less secure)
+#
+# 3. Firewall Configuration:
+#    - SSH port (22) must be open between exporter and remote nodes
+#    - No additional libvirt ports needed when using SSH transport
+#
+# 4. Connection Testing:
+#    - Test connection: virsh -c qemu+ssh://user@host/system list
+#    - Test from exporter host before adding to this file
+#
+# 5. Performance:
+#    - The /cluster endpoint scrapes all targets in parallel
+#    - Maximum 16 concurrent connections by default
+#    - Each scrape respects the configured timeout
+#
+# 6. Labels:
+#    - Labels are arbitrary key-value pairs for organizing nodes
+#    - Common labels: datacenter, rack, environment, role, region
+#    - Labels appear in the cluster JSON response for filtering
