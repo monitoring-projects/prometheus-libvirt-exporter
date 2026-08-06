@@ -4,13 +4,16 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
 	"log/slog"
 
 	"github.com/digitalocean/go-libvirt"
+	"github.com/digitalocean/go-libvirt/socket"
 	"github.com/digitalocean/go-libvirt/socket/dialers"
 	"github.com/inovex/prometheus-libvirt-exporter/libvirt_schema"
 	"github.com/prometheus/client_golang/prometheus"
@@ -447,6 +450,98 @@ func NewLibvirtExporter(uri string, driver libvirt.ConnectURI, logger *slog.Logg
 	}, nil
 }
 
+// connectURIForURI derives the libvirt ConnectURI from the supplied URI.
+// When uri is a local socket path, the caller-provided driver is used.
+// For remote QEMU URIs the transport part is stripped so that the driver
+// passed to libvirt refers to the local hypervisor on the remote host.
+func connectURIForURI(uri string, driver libvirt.ConnectURI) libvirt.ConnectURI {
+	if strings.HasPrefix(uri, "/") {
+		return driver
+	}
+
+	u, err := url.Parse(uri)
+	if err != nil {
+		return driver
+	}
+
+	switch u.Scheme {
+	case "qemu":
+		if u.Path == "" || u.Path == "/" {
+			return libvirt.QEMUSystem
+		}
+		return libvirt.ConnectURI("qemu://" + u.Path)
+	case "qemu+ssh", "qemu+tcp", "qemu+tls":
+		path := u.Path
+		if path == "" {
+			path = "/system"
+		}
+		return libvirt.ConnectURI("qemu://" + path)
+	default:
+		return driver
+	}
+}
+
+// dialerForURI returns a socket dialer appropriate for the supplied URI.
+// Supported values are local socket paths, qemu:///system, qemu:///session,
+// qemu+ssh://, qemu+tcp:// and qemu+tls://.
+func dialerForURI(uri string) (socket.Dialer, error) {
+	if strings.HasPrefix(uri, "/") {
+		return dialers.NewLocal(dialers.WithSocket(uri), dialers.WithLocalTimeout(5*time.Second)), nil
+	}
+
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse libvirt URI %q: %w", uri, err)
+	}
+
+	switch u.Scheme {
+	case "qemu":
+		return dialers.NewLocal(dialers.WithLocalTimeout(5 * time.Second)), nil
+	case "qemu+ssh":
+		host := u.Hostname()
+		if host == "" {
+			return nil, fmt.Errorf("missing host in libvirt SSH URI %q", uri)
+		}
+		user := ""
+		if u.User != nil {
+			user = u.User.Username()
+		}
+		opts := []dialers.SSHOption{
+			dialers.UseSSHUsername(user),
+			dialers.WithAcceptUnknownHostKey(),
+		}
+		if port := u.Port(); port != "" {
+			opts = append(opts, dialers.UseSSHPort(port))
+		}
+		return dialers.NewSSH(host, opts...), nil
+	case "qemu+tcp":
+		host := u.Hostname()
+		if host == "" {
+			return nil, fmt.Errorf("missing host in libvirt TCP URI %q", uri)
+		}
+		port := u.Port()
+		if port == "" {
+			port = "16509"
+		}
+		return dialers.NewRemote(host,
+			dialers.UsePort(port),
+			dialers.WithRemoteTimeout(20*time.Second),
+		), nil
+	case "qemu+tls":
+		host := u.Hostname()
+		if host == "" {
+			return nil, fmt.Errorf("missing host in libvirt TLS URI %q", uri)
+		}
+		port := u.Port()
+		if port == "" {
+			port = "16514"
+		}
+		return dialers.NewTLS(host, dialers.UseTLSPort(port)), nil
+	default:
+		return nil, fmt.Errorf("unsupported libvirt URI scheme %q in %q", u.Scheme, uri)
+	}
+}
+
 // DomainsFromLibvirt retrives all domains from the libvirt socket and enriches them with some meta information.
 func DomainsFromLibvirt(l *libvirt.Libvirt, logger *slog.Logger) ([]domainMeta, error) {
 	domains, _, err := l.ConnectListAllDomains(1, 0)
@@ -503,9 +598,19 @@ func CollectFromLibvirt(ch chan<- prometheus.Metric, uri string, driver libvirt.
 		pools []libvirt.StoragePool
 	)
 
-	dialer := dialers.NewLocal(dialers.WithSocket(uri), dialers.WithLocalTimeout(5*time.Second))
+	dialer, err := dialerForURI(uri)
+	if err != nil {
+		logger.Error("failed to create dialer", "msg", err)
+		ch <- prometheus.MustNewConstMetric(
+			libvirtUpDesc,
+			prometheus.GaugeValue,
+			0.0)
+		return err
+	}
+	connectURI := connectURIForURI(uri, driver)
+
 	l := libvirt.NewWithDialer(dialer)
-	if err = l.ConnectToURI(driver); err != nil {
+	if err = l.ConnectToURI(connectURI); err != nil {
 		logger.Error("failed to connect", "msg", err)
 		// if we cannot connect to libvirt, we set the up metric to 0
 		ch <- prometheus.MustNewConstMetric(
@@ -1443,9 +1548,16 @@ func (e *LibvirtExporter) Describe(ch chan<- *prometheus.Desc) {
 
 // HealthHandler returns http 200 if libvirt is reachable, http 503 otherwise.
 func (e *LibvirtExporter) HealthHandler(w http.ResponseWriter, r *http.Request) {
-	dialer := dialers.NewLocal(dialers.WithSocket(e.uri), dialers.WithLocalTimeout(5*time.Second))
+	dialer, err := dialerForURI(e.uri)
+	if err != nil {
+		e.logger.Error("health check: failed to create dialer", "msg", err)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	connectURI := connectURIForURI(e.uri, e.driver)
+
 	l := libvirt.NewWithDialer(dialer)
-	if err := l.ConnectToURI(e.driver); err != nil {
+	if err := l.ConnectToURI(connectURI); err != nil {
 		e.logger.Error("health check: failed to connect to libvirt", "msg", err)
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return

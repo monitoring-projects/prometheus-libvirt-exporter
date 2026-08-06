@@ -10,7 +10,7 @@ before:
 builds:
   - id: prometheus-libvirt-exporter
     dir: .
-    main: ./main.go
+    main: .
     binary: prometheus-libvirt-exporter
     env:
       - CGO_ENABLED=0 # build a static binary without C dependencies
@@ -49,7 +49,7 @@ dockers_v2:
       - linux/arm64
       - linux/riscv64
     images:
-      - ghcr.io/inovex/{{ .ProjectName }}
+      - ghcr.io/{{ .Env.GITHUB_REPOSITORY_OWNER }}/{{ .ProjectName }}
     build_args:
       BINARY_NAME: "{{ .ProjectName }}"
     tags:
@@ -87,14 +87,11 @@ checksum:
 
 # Configuration for GitHub Releases
 release:
-  github:
-    owner: inovex
-    name: prometheus-libvirt-exporter
   footer: |
     ## Docker Images
-    - ghcr.io/inovex/prometheus-libvirt-exporter:{{ trimprefix .Tag "v" }} (universal, multi-platform)
-    - ghcr.io/inovex/prometheus-libvirt-exporter:{{ trimprefix .Tag "v" }}-amd64
-    - ghcr.io/inovex/prometheus-libvirt-exporter:{{ trimprefix .Tag "v" }}-arm64
-    - ghcr.io/inovex/prometheus-libvirt-exporter:{{ trimprefix .Tag "v" }}-riscv64
+    - ghcr.io/{{ .Env.GITHUB_REPOSITORY_OWNER }}/{{ .ProjectName }}:{{ trimprefix .Tag "v" }} (universal, multi-platform)
+    - ghcr.io/{{ .Env.GITHUB_REPOSITORY_OWNER }}/{{ .ProjectName }}:{{ trimprefix .Tag "v" }}-amd64
+    - ghcr.io/{{ .Env.GITHUB_REPOSITORY_OWNER }}/{{ .ProjectName }}:{{ trimprefix .Tag "v" }}-arm64
+    - ghcr.io/{{ .Env.GITHUB_REPOSITORY_OWNER }}/{{ .ProjectName }}:{{ trimprefix .Tag "v" }}-riscv64
   prerelease: auto
   replace_existing_draft: true
