@@ -1,0 +1,8 @@
+# Ignore locally built binary so the Go build output path is empty.
+prometheus-libvirt-exporter
+
+# Avoid shipping git metadata and IDE artifacts in the build context.
+.git
+.gitignore
+*.swp
+*.swo

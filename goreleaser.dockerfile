@@ -1,4 +1,6 @@
-FROM scratch
+FROM alpine:3.21
 ARG TARGETPLATFORM
-COPY $TARGETPLATFORM/prometheus-libvirt-exporter /prometheus-libvirt-exporter 
-ENTRYPOINT ["/prometheus-libvirt-exporter"]
+
+COPY --chmod=755 $TARGETPLATFORM/prometheus-libvirt-exporter /usr/bin/prometheus-libvirt-exporter
+EXPOSE 9177
+ENTRYPOINT ["/usr/bin/prometheus-libvirt-exporter"]

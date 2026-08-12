@@ -1,5 +1,6 @@
 build
 dist
+prometheus-libvirt-exporter
 .vscode
 dashboards/openstack-libvirt-dashboard/vendor
 dashboards/openstack-libvirt-dashboard/jsonnetfile.lock.json

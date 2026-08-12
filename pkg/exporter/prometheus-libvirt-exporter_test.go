@@ -3,8 +3,12 @@ package exporter
 import (
 	"encoding/xml"
 	"fmt"
+	"reflect"
 	"testing"
+	"time"
 
+	"github.com/digitalocean/go-libvirt"
+	"github.com/digitalocean/go-libvirt/socket/dialers"
 	libvirt_schema "github.com/inovex/prometheus-libvirt-exporter/libvirt_schema"
 	"github.com/stretchr/testify/assert"
 )
@@ -164,4 +168,131 @@ func TestUnmarshal(t *testing.T) {
 	fmt.Printf("xml name=%#v\n", r.Metadata.NovaInstance.XMLName)
 	fmt.Printf("nova name=%#v\n", r.Metadata.NovaInstance.Name)
 	fmt.Printf("nova =%#v\n", r.Metadata)
+}
+
+func TestConnectURIForURI(t *testing.T) {
+	tests := []struct {
+		name   string
+		uri    string
+		driver libvirt.ConnectURI
+		want   libvirt.ConnectURI
+	}{
+		{"local socket keeps driver", "/var/run/libvirt/libvirt-sock-ro", libvirt.QEMUSystem, libvirt.QEMUSystem},
+		{"qemu:///system", "qemu:///system", libvirt.QEMUSession, libvirt.ConnectURI("qemu:///system")},
+		{"qemu:///session", "qemu:///session", libvirt.QEMUSystem, libvirt.ConnectURI("qemu:///session")},
+		{"qemu+ssh strips transport", "qemu+ssh://root@node1/system", libvirt.QEMUSystem, libvirt.QEMUSystem},
+		{"qemu+ssh custom path", "qemu+ssh://root@node1/session", libvirt.QEMUSystem, libvirt.ConnectURI("qemu:///session")},
+		{"qemu+tcp strips transport", "qemu+tcp://node1/system", libvirt.QEMUSystem, libvirt.QEMUSystem},
+		{"qemu+tls strips transport", "qemu+tls://node1/system", libvirt.QEMUSystem, libvirt.QEMUSystem},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, connectURIForURI(tt.uri, tt.driver))
+		})
+	}
+}
+
+func TestDialerForURI(t *testing.T) {
+	tests := []struct {
+		name       string
+		uri        string
+		sshKeyFile string
+		wantType   string
+	}{
+		{"local socket", "/var/run/libvirt/libvirt-sock-ro", "", "*dialers.Local"},
+		{"qemu system", "qemu:///system", "", "*dialers.Local"},
+		{"ssh system", "qemu+ssh://root@node1/system", "", "*dialers.SSH"},
+		{"ssh system with key", "qemu+ssh://root@node1/system", "/tmp/key", "*dialers.SSH"},
+		{"tcp system", "qemu+tcp://node1/system", "", "*dialers.Remote"},
+		{"tls system", "qemu+tls://node1/system", "", "*dialers.TLS"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := dialerForURI(tt.uri, tt.sshKeyFile)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.wantType, fmt.Sprintf("%T", got))
+		})
+	}
+}
+
+func TestDialerForURIUnsupported(t *testing.T) {
+	_, err := dialerForURI("qemu+http://node1/system", "")
+	assert.Error(t, err)
+}
+
+func TestDialerForURILocalSocket(t *testing.T) {
+	got, err := dialerForURI("/tmp/libvirt.sock", "")
+	assert.NoError(t, err)
+	local, ok := got.(*dialers.Local)
+	assert.True(t, ok)
+	rv := reflect.ValueOf(local).Elem()
+	assert.Equal(t, "/tmp/libvirt.sock", rv.FieldByName("socket").String())
+	assert.Equal(t, int64(5*time.Second), rv.FieldByName("timeout").Int())
+}
+
+func TestDialerForURISSHDetails(t *testing.T) {
+	got, err := dialerForURI("qemu+ssh://root@node1:2222/system", "/etc/key")
+	assert.NoError(t, err)
+	ssh, ok := got.(*dialers.SSH)
+	assert.True(t, ok)
+	rv := reflect.ValueOf(ssh).Elem()
+	assert.Equal(t, "node1", rv.FieldByName("hostname").String())
+	assert.Equal(t, "root", rv.FieldByName("username").String())
+	assert.Equal(t, "2222", rv.FieldByName("port").String())
+	assert.Equal(t, "/var/run/libvirt/libvirt-sock", rv.FieldByName("remoteSocket").String())
+	assert.Equal(t, "/etc/key", rv.FieldByName("keyFile").String())
+	assert.True(t, rv.FieldByName("acceptUnknownHostKey").Bool())
+}
+
+func TestDialerForURISSHDefaultPort(t *testing.T) {
+	got, err := dialerForURI("qemu+ssh://root@node1/system", "")
+	assert.NoError(t, err)
+	ssh, ok := got.(*dialers.SSH)
+	assert.True(t, ok)
+	rv := reflect.ValueOf(ssh).Elem()
+	assert.Equal(t, "22", rv.FieldByName("port").String())
+}
+
+func TestDialerForURITCPDetails(t *testing.T) {
+	got, err := dialerForURI("qemu+tcp://node1:16510/system", "")
+	assert.NoError(t, err)
+	r, ok := got.(*dialers.Remote)
+	assert.True(t, ok)
+	rv := reflect.ValueOf(r).Elem()
+	assert.Equal(t, "node1", rv.FieldByName("host").String())
+	assert.Equal(t, "16510", rv.FieldByName("port").String())
+}
+
+func TestDialerForURITCPDefaultPort(t *testing.T) {
+	got, err := dialerForURI("qemu+tcp://node1/system", "")
+	assert.NoError(t, err)
+	r, ok := got.(*dialers.Remote)
+	assert.True(t, ok)
+	rv := reflect.ValueOf(r).Elem()
+	assert.Equal(t, "16509", rv.FieldByName("port").String())
+}
+
+func TestDialerForURITLSDetails(t *testing.T) {
+	got, err := dialerForURI("qemu+tls://node1:16515/system", "")
+	assert.NoError(t, err)
+	tls, ok := got.(*dialers.TLS)
+	assert.True(t, ok)
+	rv := reflect.ValueOf(tls).Elem()
+	assert.Equal(t, "node1", rv.FieldByName("host").String())
+	assert.Equal(t, "16515", rv.FieldByName("port").String())
+}
+
+func TestDialerForURITLSDefaultPort(t *testing.T) {
+	got, err := dialerForURI("qemu+tls://node1/system", "")
+	assert.NoError(t, err)
+	tls, ok := got.(*dialers.TLS)
+	assert.True(t, ok)
+	rv := reflect.ValueOf(tls).Elem()
+	assert.Equal(t, "16514", rv.FieldByName("port").String())
+}
+
+func TestNewLibvirtExporterSSHKeyFile(t *testing.T) {
+	e, err := NewLibvirtExporter("qemu+ssh://root@node1/system", libvirt.QEMUSystem, nil, 0, 1, "/etc/key")
+	assert.NoError(t, err)
+	assert.Equal(t, "/etc/key", e.sshKeyFile)
 }
